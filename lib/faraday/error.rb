@@ -192,6 +192,18 @@ module Faraday
   class SSLError < Error
   end
 
+  # Raised when a request is canceled before it completes.
+  class RequestCanceled < Error
+    def initialize(exc = 'request canceled', response = nil)
+      exc = 'request canceled' if exc.nil?
+      super
+    end
+  end
+
+  # Raised when an adapter emits an informational response after completion.
+  class LateInformationResponseError < Error
+  end
+
   # Raised by middlewares that parse the response, like the JSON response middleware.
   class ParsingError < Error
   end

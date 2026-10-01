@@ -16,4 +16,11 @@ RSpec.describe Faraday::RequestOptions do
     expect(options.proxy).to be_nil
     expect(options.inspect).to eq('#<Faraday::RequestOptions (empty)>')
   end
+
+  it 'accepts an informational response callback' do
+    callback = proc {}
+    options.on_informational_response = callback
+
+    expect(options.on_informational_response).to eq(callback)
+  end
 end

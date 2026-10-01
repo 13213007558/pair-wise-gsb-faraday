@@ -440,6 +440,189 @@ RSpec.describe Faraday::Adapter::Test do
     end
   end
 
+  describe 'informational responses' do
+    def script(session, fail_after_hints: false)
+      session.information(100, { 'Expect' => '100-continue' })
+      session.information(103, { 'Link' => '</style.css>; rel=preload' })
+      session.information(103, { 'Link' => '</script.js>; rel=modulepreload' })
+      return session.fail(RuntimeError.new('boom')) if fail_after_hints
+
+      session.respond(200, { 'Content-Type' => 'text/plain' }, 'done')
+    end
+
+    let(:events) { [] }
+
+    let(:information_connection) do
+      callbacks = events
+      Faraday.new do |builder|
+        builder.adapter :test, stubs
+        builder.use(Class.new(Faraday::Middleware) do
+          define_method(:on_request) do |env|
+            env.request.on_informational_response = proc { |event| callbacks << event }
+          end
+        end)
+      end
+    end
+
+    it 'delivers 100 and two 103 responses before the final response' do
+      stubs.get('/hints') { |_env, _meta, session| script(session) }
+
+      response = information_connection.get('/hints')
+
+      expect(events.map(&:status)).to eq([100, 103, 103])
+      expect(events.map { |event| event.headers.class }).to all(eq(Faraday::Utils::Headers))
+      expect(events).to all(be_frozen)
+      expect(events.first['expect']).to eq('100-continue')
+      expect(events[1].headers['Link']).to eq('</style.css>; rel=preload')
+      expect(events[2].headers['Link']).to eq('</script.js>; rel=modulepreload')
+      expect(response.status).to eq(200)
+      expect(response.body).to eq('done')
+    end
+
+    it 'keeps every header snapshot independent' do
+      headers = { 'Link' => 'first' }
+      stubs.get('/mutable') do |_env, _meta, session|
+        session.information(103, headers)
+        headers['Link'] = 'second'
+        session.respond(200, {}, '')
+      end
+
+      information_connection.get('/mutable')
+
+      expect(events.first.headers['Link']).to eq('first')
+    end
+
+    it 'does not invoke response middleware for informational responses' do
+      completed = []
+      information_events = []
+      tracker = Class.new(Faraday::Middleware) do
+        define_method(:on_complete) { |_env| completed << :complete }
+      end
+      connection = Faraday.new do |builder|
+        builder.response :raise_error
+        builder.response :json
+        builder.use tracker
+        builder.adapter :test, stubs
+        builder.use(Class.new(Faraday::Middleware) do
+          define_method(:on_request) do |env|
+            env.request.on_informational_response = proc { |event| information_events << event.status }
+          end
+        end)
+      end
+      stubs.get('/middleware') do |_env, _meta, session|
+        session.information(103, { 'Content-Type' => 'application/json', 'Link' => '</x>' })
+        session.respond(200, { 'Content-Type' => 'application/json' }, '{"ok":true}')
+      end
+
+      response = connection.get('/middleware')
+
+      expect(response.body).to eq('ok' => true)
+      expect(information_events).to eq([103])
+      expect(completed).to eq([:complete])
+    end
+
+    it 'fails synchronously between information and completion' do
+      stubs.get('/failure') { |_env, _meta, session| script(session, fail_after_hints: true) }
+
+      expect { information_connection.get('/failure') }.to raise_error(RuntimeError, 'boom')
+      expect(events.map(&:status)).to eq([100, 103, 103])
+    end
+
+    it 'supports delayed completion and rejects late events' do
+      session = nil
+      started = Queue.new
+      perform = Queue.new
+      stubs.get('/delayed') do |_env, _meta, script_session|
+        script_session.defer do |deferred|
+          started << true
+          perform.pop
+          deferred.information(100)
+          deferred.information(103, { 'Link' => '</style.css>; rel=preload' })
+          deferred.information(103, { 'Link' => '</script.js>; rel=modulepreload' })
+          deferred.respond(200, { 'Content-Type' => 'text/plain' }, 'done')
+        end
+        session = script_session
+      end
+
+      information_connection.get('/delayed')
+      started.pop
+      perform << true
+      response = session.wait
+
+      expect(events.map(&:status)).to eq([100, 103, 103])
+      expect(response.status).to eq(200)
+      expect(response.body).to eq('done')
+      expect { session.information(103) }.to raise_error(Faraday::LateInformationResponseError)
+    end
+
+    it 'surfaces a delayed failure after informational responses' do
+      session = nil
+      started = Queue.new
+      perform = Queue.new
+      stubs.get('/delayed-failure') do |_env, _meta, script_session|
+        script_session.defer do |deferred|
+          started << true
+          perform.pop
+          deferred.information(100)
+          deferred.information(103)
+          deferred.fail(RuntimeError.new('late boom'))
+        end
+        session = script_session
+      end
+
+      information_connection.get('/delayed-failure')
+      started.pop
+      perform << true
+
+      expect { session.wait }.to raise_error(RuntimeError, 'late boom')
+      expect(session.response).to be_failed
+      expect(events.map(&:status)).to eq([100, 103])
+    end
+
+    it 'has clear cancellation semantics for delayed requests' do
+      session = nil
+      started = Queue.new
+      cancellation_gate = Queue.new
+      stubs.get('/canceled') do |_env, _meta, script_session|
+        script_session.defer do |deferred|
+          started << true
+          cancellation_gate.pop
+          deferred.respond(200, {}, 'late')
+        end
+        session = script_session
+      end
+
+      information_connection.get('/canceled')
+      started.pop
+      session.cancel
+      cancellation_gate << true
+
+      expect(session.wait).to be_canceled
+      expect(session.response.error).to be_a(Faraday::RequestCanceled)
+      session.join_deferred
+    end
+
+    it 'requires an adapter capability declaration' do
+      unsupported_adapter = Class.new(Faraday::Adapter) do
+        def call(env)
+          super
+          save_information(env, 103)
+          save_response(env, 200, '')
+        end
+      end
+      env = Faraday::Env.from(
+        method: :get,
+        request: Faraday::RequestOptions.new,
+        request_headers: Faraday::Utils::Headers.new,
+        url: Faraday::Utils::URI('/')
+      )
+
+      expect { unsupported_adapter.new.call(env) }.to raise_error(NotImplementedError)
+      expect(unsupported_adapter).not_to be_supports_informational_responses
+      expect(described_class).to be_supports_informational_responses
+    end
+  end
+
   describe '#clear' do
     it 'removes pending stubs' do
       stubs.clear

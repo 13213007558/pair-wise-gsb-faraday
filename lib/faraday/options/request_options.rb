@@ -38,11 +38,15 @@ module Faraday
   #   #
   #   # @!attribute on_data
   #   #   @return [Proc] callback invoked with each chunk when streaming the response
+  #   #
+  #   # @!attribute on_informational_response
+  #   #   @return [Proc] callback invoked with each 1xx informational response
   #   class RequestOptions < Options; end
   RequestOptions = Options.new(:params_encoder, :proxy, :bind,
                                :timeout, :open_timeout, :read_timeout,
                                :write_timeout, :boundary, :oauth,
-                               :context, :on_data) do
+                               :context, :on_data, :on_information,
+                               :on_informational_response) do
     def []=(key, value)
       if key && key.to_sym == :proxy
         super(key, value ? ProxyOptions.from(value) : nil)

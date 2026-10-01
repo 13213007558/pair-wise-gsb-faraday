@@ -18,6 +18,11 @@ require 'faraday/middleware'
 require 'faraday/adapter'
 require 'faraday/request'
 require 'faraday/response'
+
+module Faraday
+  InformationalResponse = Response::Information
+end
+
 require 'faraday/net_http'
 # This is the main namespace for Faraday.
 #

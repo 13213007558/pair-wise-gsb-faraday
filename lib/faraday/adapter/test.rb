@@ -60,7 +60,99 @@ module Faraday
     #   resp = test.post '/foo', JSON.dump(name: 'YK', created_at: Time.now)
     #   resp.status # => 200
     class Test < Faraday::Adapter
+      self.supports_informational_responses = true
+
       attr_accessor :stubs
+
+      class ScriptSession
+        attr_reader :env, :response
+
+        def initialize(adapter, env, app)
+          @adapter = adapter
+          @env = env
+          @response = env.response
+          @app = app
+          @queue = Queue.new
+          @handled = false
+          @deferred = false
+        end
+
+        def deferred?
+          @deferred
+        end
+
+        def handled?
+          @handled
+        end
+
+        def information(status, headers = nil, reason_phrase = nil)
+          @adapter.send(:save_information, @env, status, headers, reason_phrase)
+          self
+        end
+        alias informational_response information
+
+        def respond(status, headers = nil, body = nil, reason_phrase = nil)
+          @adapter.send(:save_response, @env, status, body, headers, reason_phrase)
+          complete!
+          self
+        end
+
+        def fail(error = nil)
+          error = Faraday::ConnectionFailed.new('stubbed request failed') unless error.is_a?(Exception)
+          @response.fail(error)
+          @handled = true
+
+          if @deferred
+            @queue << [:error, error]
+            @queue.close
+            self
+          else
+            raise error
+          end
+        end
+
+        def cancel(error = nil)
+          @response.cancel(error) unless @response.closed?
+          @handled = true
+          @queue.close
+          self
+        end
+
+        def defer(&block)
+          @deferred = true
+          @thread = Thread.new do
+            begin
+              block.call(self)
+              @queue.close unless @queue.closed?
+            rescue StandardError => error
+              @response.fail(error) unless @response.closed?
+              @queue << [:error, error] unless @queue.closed?
+              @queue.close
+            end
+          end
+          self
+        end
+
+        def join_deferred
+          @thread&.join
+        end
+
+        def wait
+          while (event = @queue.pop)
+            _type, error = event
+            raise error
+          end
+          @response
+        end
+
+        private
+
+        def complete!
+          @handled = true
+          @app.call(@env)
+          @queue.close
+        end
+      end
 
       # A stack of Stubs
       class Stubs
@@ -296,6 +388,21 @@ module Faraday
         timeout = request_timeout(:open, env[:request])
         timeout ||= request_timeout(:read, env[:request])
 
+        if scripted_block?(stub.block)
+          session = ScriptSession.new(self, env, @app)
+          params << session
+
+          if timeout
+            ::Timeout.timeout(timeout, Faraday::TimeoutError) do
+              stub.block.call(*params)
+            end
+          else
+            stub.block.call(*params)
+          end
+
+          return env.response if session.handled? || session.deferred?
+        end
+
         status, headers, body =
           if timeout
             ::Timeout.timeout(timeout, Faraday::TimeoutError) do
@@ -311,6 +418,12 @@ module Faraday
         save_response(env, status, body, headers, nil)
 
         @app.call(env)
+      end
+
+      private
+
+      def scripted_block?(block)
+        block.arity >= 3
       end
     end
   end

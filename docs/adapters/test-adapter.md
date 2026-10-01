@@ -65,6 +65,43 @@ stubs.post('/kohada', 'where=sea&temperature=24') { |env| [ 200, {}, 'spotted gi
 stubs.post('/anago', -> (request_body) { JSON.parse(request_body).slice('name') == { 'name' => 'Wakamoto' } }) { |env| [200, {}, 'conger eel'] }
 ```
 
+## Informational responses
+
+A stub block that accepts a third block argument gets a script session. Use it
+to emit 1xx responses before the final response.
+
+```ruby
+stubs.get('/early-hints') do |_env, _meta, session|
+  session.information(100)
+  session.information(103, { 'Link' => '</style.css>; rel=preload' })
+  session.information(103, { 'Link' => '</script.js>; rel=modulepreload' })
+  session.respond(200, { 'Content-Type' => 'text/plain' }, 'done')
+end
+```
+
+To simulate a failure after early hints, call `session.fail(exception)`.
+
+For delayed completion, call `session.defer` and return the session from the
+stub. The connection call returns the pending response and `session.wait`
+blocks until completion or failure.
+
+```ruby
+session = nil
+stubs.get('/delayed') do |_env, _meta, script_session|
+  script_session.defer do |deferred|
+    deferred.information(103, { 'Link' => '</style.css>; rel=preload' })
+    deferred.respond(200, {}, 'done')
+  end
+  session = script_session
+end
+
+conn.get('/delayed')
+response = session.wait
+```
+
+`session.cancel` marks a delayed request canceled. Informational responses
+emitted after completion, failure, or cancellation are rejected.
+
 If you want to stub requests that exactly match a path, parameters, and headers,
 `strict_mode` would be useful.
 

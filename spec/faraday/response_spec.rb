@@ -17,6 +17,30 @@ RSpec.describe Faraday::Response do
   it { expect(subject.headers['Content-Type']).to eq('text/plain') }
   it { expect(subject['content-type']).to eq('text/plain') }
 
+  describe Faraday::InformationalResponse do
+    subject(:information) { described_class.new(103, link_headers) }
+
+    let(:link_headers) { { 'Link' => String.new('</style.css>; rel=preload') } }
+
+    it 'keeps an immutable header snapshot' do
+      expect(information.status).to eq(103)
+      expect(information.headers).to be_frozen
+      expect(information['LINK']).to eq('</style.css>; rel=preload')
+      expect { information.headers['Link'] = 'changed' }.to raise_error(FrozenError)
+    end
+
+    it 'does not share later header changes' do
+      information
+      link_headers['Link'] = link_headers['Link'] + ', </script.js>'
+
+      expect(information.headers['Link']).to eq('</style.css>; rel=preload')
+    end
+
+    it 'rejects non-informational statuses' do
+      expect { described_class.new(200) }.to raise_error(ArgumentError)
+    end
+  end
+
   describe '#apply_request' do
     before { subject.apply_request(body: 'a=b', method: :post) }
 
@@ -79,6 +103,66 @@ RSpec.describe Faraday::Response do
       subject.finish({})
 
       expect(subject.env).to eq(callback_env)
+    end
+  end
+
+  describe '#on_information' do
+    subject(:response) { described_class.new }
+
+    it 'delivers informational responses in registration order' do
+      events = []
+      response.on_information { |event| events << [:first, event.status] }
+      response.on_information { |event| events << [:second, event.status] }
+
+      response.information!(100)
+      response.information!(103, { 'Link' => '</a>' })
+
+      expect(events).to eq([[:first, 100], [:second, 100], [:first, 103], [:second, 103]])
+    end
+
+    it 'supports the short registration alias' do
+      events = []
+      response.on_information { |event| events << event.status }
+      response.information!(100)
+
+      expect(events).to eq([100])
+    end
+
+    it 'stops callbacks when a callback cancels the request' do
+      events = []
+      response.on_information { |event| events << event.status; response.cancel }
+      response.on_information { |_| raise 'must not run' }
+
+      expect { response.information!(103) }.to raise_error(Faraday::RequestCanceled)
+      expect(response).to be_canceled
+      expect(events).to eq([103])
+    end
+
+    it 'does not register callbacks after completion' do
+      response.finish(env)
+
+      expect { response.on_information { raise 'must not run' } }.not_to raise_error
+      expect { response.information!(103) }.to raise_error(Faraday::LateInformationResponseError)
+    end
+
+    it 'marks the response failed when a callback raises' do
+      error = StandardError.new('boom')
+      response.on_information { raise error }
+
+      expect { response.information!(103) }.to raise_error(error)
+      expect(response).to be_failed
+      expect(response.error).to eq(error)
+      expect { response.information!(103) }.to raise_error(Faraday::LateInformationResponseError)
+    end
+
+    it 'supports explicit cancellation' do
+      response.cancel
+
+      expect(response).to be_canceled
+      expect(response).to be_closed
+      expect(response).not_to be_finished
+      expect { response.finish(env) }.to raise_error(RuntimeError, 'response already closed')
+      expect { response.information!(103) }.to raise_error(Faraday::LateInformationResponseError)
     end
   end
 end

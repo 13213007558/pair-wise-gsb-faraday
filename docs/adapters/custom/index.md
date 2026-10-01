@@ -118,6 +118,43 @@ end
 `#save_response` also accepts a `finished` keyword argument, which defaults to `true`, but that you can set to false
 if you don't want it to call `#finish` on the `Response` object.
 
+### Informational responses (`100` and `103`)
+
+Adapters may receive provisional 1xx responses before the final response.
+Because these are not the final response, they must not call `#save_response`,
+`#finish`, response middleware, JSON decoding, or error-handling middleware.
+
+Declare support explicitly and deliver each response through
+`#save_information`. Adapters that do not declare support must not emit
+informational events.
+
+```ruby
+class FlorpHttp < Faraday::Adapter
+  self.supports_informational_responses = true
+
+  def call(env)
+    super
+    save_information(env, response.status, response.headers)
+    save_response(env, final.status, final.body, final.headers, final.reason)
+  end
+end
+```
+
+The callback receives an immutable `Faraday::InformationalResponse` with
+`status`, `headers`, and `reason_phrase`:
+
+```ruby
+conn.get('/resources') do |request|
+  request.options.on_informational_response = proc do |information|
+    preload_links(information.headers['Link']) if information.status == 103
+  end
+end
+```
+
+After the final response completes, subsequent `#save_information` calls raise
+`Faraday::LateInformationResponseError`. If a callback raises, Faraday marks
+the pending response failed and the exception propagates as the terminal error.
+
 ### `#request_timeout`
 
 Most HTTP libraries support different types of timeouts, like `:open_timeout`, `:read_timeout` and `:write_timeout`.

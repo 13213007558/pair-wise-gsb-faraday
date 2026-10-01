@@ -15,6 +15,7 @@ All these options are optional.
 | `:boundary`       | String            | nil                                                            | The boundary string for multipart requests.                             |
 | `:context`        | Hash              | nil                                                            | Arbitrary data that you can pass to your request.                       |
 | `:on_data`        | Proc              | nil                                                            | A callback that will be called when data is received. See [Streaming]   |
+| `:on_informational_response` | Proc   | nil                                                            | A callback for each 100/103 informational response before the final response. |
 
 ## Example
 

@@ -26,6 +26,7 @@
   * Writing custom adapters
     * [Overview](adapters/custom/index.md)
     * [Parallel Requests](adapters/custom/parallel-requests.md)
+    * [Informational Responses](adapters/custom/index.md#informational-responses-100-and-103)
     * [Streaming Responses](adapters/custom/streaming.md)
     * [Test your adapter](adapters/custom/testing.md)
 * Advanced Features

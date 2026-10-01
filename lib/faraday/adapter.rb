@@ -30,7 +30,21 @@ module Faraday
 
     extend Parallelism
 
+    class << self
+      attr_writer :supports_informational_responses
+
+      def supports_informational_responses?
+        @supports_informational_responses == true
+      end
+
+      def inherited(subclass)
+        super
+        subclass.supports_informational_responses = supports_informational_responses?
+      end
+    end
+
     self.supports_parallel = false
+    self.supports_informational_responses = false
 
     def initialize(_app = nil, opts = {}, &block)
       @app = lambda(&:response)
@@ -62,9 +76,29 @@ module Faraday
     def call(env)
       env.clear_body if env.needs_body?
       env.response = Response.new
+      configure_information_callback(env)
+    end
+
+    protected
+
+    def save_information(env, status, headers = nil, reason_phrase = nil)
+      unless self.class.supports_informational_responses?
+        raise NotImplementedError, "#{self.class} does not support informational responses"
+      end
+
+      information = Faraday::InformationalResponse.new(status, headers, reason_phrase)
+      env.response.information!(information)
+      information
     end
 
     private
+
+    def configure_information_callback(env)
+      callback = env.request.on_informational_response || env.request.on_information
+      return unless callback.respond_to?(:call)
+
+      env.response.on_informational_response { |information| callback.call(information) }
+    end
 
     def save_response(env, status, body, headers = nil, reason_phrase = nil, finished: true)
       env.status = status

@@ -163,6 +163,7 @@ The following pages provide detailed configuration for the middleware that ships
 * [Authentication](middleware/included/authentication.md)
 * [URL Encoding](middleware/included/url-encoding.md)
 * [JSON Encoding/Decoding](middleware/included/json.md)
+* [Hedging](middleware/included/hedging.md)
 * [Instrumentation](middleware/included/instrumentation.md)
 * [Logging](middleware/included/logging.md)
 * [Raising Errors](middleware/included/raising-errors.md)

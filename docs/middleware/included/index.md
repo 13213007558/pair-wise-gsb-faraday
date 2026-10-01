@@ -16,6 +16,7 @@ content type.
 * [`UrlEncoded`][url_encoded] converts a `Faraday::Request#body` hash of key/value pairs into a url-encoded request body.
 * [`Json Request`][json-request] converts a `Faraday::Request#body` hash of key/value pairs into a JSON request body.
 * [`Instrumentation`][instrumentation] allows to instrument requests using different tools.
+* [`Hedging`][hedging] duplicates slow requests after a threshold and returns the first satisfactory response.
 
 
 ### Response Middleware
@@ -32,6 +33,7 @@ before returning it.
 [url_encoded]:          middleware/included/url-encoding
 [json-request]:         middleware/included/json#json-requests
 [instrumentation]:      middleware/included/instrumentation
+[hedging]:              middleware/included/hedging
 [json-response]:        middleware/included/json#json-responses
 [logger]:               middleware/included/logging
 [raise_error]:          middleware/included/raising-errors

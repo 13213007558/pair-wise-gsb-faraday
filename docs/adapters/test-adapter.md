@@ -92,6 +92,58 @@ will be handled in a strict way.
 stubs.strict_mode = true
 ```
 
+For SDK workflows such as create, poll, and delete, ordinary stubs can match each
+request but cannot prove that they were made in the correct order. Use a named
+scenario to define the accepted requests for each state and the state transition
+made after a successful response.
+
+```ruby
+stubs = Faraday::Adapter::Test::Stubs.new do |stub|
+  stub.scenario(:job, initial_state: :creating) do
+    state :creating do
+      post('/jobs', to: :pending) do |env, session|
+        session.data[:job_id] = 'job-123'
+        [202, {}, { id: 'job-123' }]
+      end
+    end
+
+    state :pending do
+      get('/jobs/:id', to: ->(session, attempts) do
+        attempts >= 2 ? :ready : :same
+      end) do |_env, session|
+        [200, {}, { id: session.data[:job_id], status: 'pending' }]
+      end
+    end
+
+    state :ready do
+      get('/jobs/:id') do |_env, session|
+        [200, {}, { id: session.data[:job_id], status: 'ready' }]
+      end
+
+      delete('/jobs/:id', to: :deleted) do |_env, session|
+        [204, {}, { id: session.data[:job_id] }]
+      end
+    end
+
+    state :deleted do
+      get('/jobs/:id') { [404, {}, {}] }
+    end
+  end
+end
+```
+
+The `:id` path segment is captured and used to isolate sessions, so multiple
+created resources can be polled independently. Response blocks receive the
+request env, the session, and the regular matcher metadata. Store values on
+`session.data` so later responses can reference data captured during creation.
+
+Requests that structurally match a scenario but are not allowed in the current
+state raise `Faraday::Adapter::Test::Stubs::InvalidScenarioStep` and do not
+consume later stubs. Polling after a failed creation raises
+`Faraday::Adapter::Test::Stubs::ScenarioCreationFailed`, which gives a different
+error from deleting a resource that was never created. Calling `clear` removes
+scenarios and their session state along with ordinary stubs.
+
 Finally, you can treat your stubs as mocks by verifying that all of the stubbed
 calls were made. NOTE: this feature is still fairly experimental. It will not
 verify the order or count of any stub.

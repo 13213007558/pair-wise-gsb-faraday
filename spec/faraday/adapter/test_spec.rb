@@ -440,6 +440,172 @@ RSpec.describe Faraday::Adapter::Test do
     end
   end
 
+  describe 'stateful scenarios' do
+    let(:stubs) do
+      described_class::Stubs.new do |stubs|
+        stubs.scenario(:job, initial_state: :creating) do
+          state :creating do
+            post '/jobs', ->(body) { JSON.parse(body)['type'] == 'report' }, to: :pending do |_env, session|
+              session.data[:job_id] = 'job-123'
+              [202, {}, { id: 'job-123' }]
+            end
+          end
+
+          state :pending do
+            get '/jobs/:id', to: ->(session, attempts) { attempts >= 2 ? :ready : :same } do |_env, session|
+              [200, {}, { id: session.data[:job_id], status: 'pending' }]
+            end
+          end
+
+          state :ready do
+            get '/jobs/:id' do |_env, session|
+              [200, {}, { id: session.data[:job_id], status: 'ready' }]
+            end
+            delete '/jobs/:id', to: :deleted do |_env, session|
+              [204, {}, { id: session.data[:job_id] }]
+            end
+          end
+
+          state :deleted do
+            get '/jobs/:id' do |_env, session|
+              [404, {}, { id: session.data[:job_id] }]
+            end
+          end
+        end
+
+        stubs.get('/ordinary') { [200, {}, 'ordinary'] }
+      end
+    end
+
+    it 'creates, repeats polling, checks the terminal state, and deletes' do
+      create_response = connection.post('/jobs', JSON.dump(type: 'report'))
+      expect(create_response.status).to eq(202)
+
+      pending_response = connection.get('/jobs/job-123')
+      expect(pending_response.body[:status]).to eq('pending')
+
+      second_pending_response = connection.get('/jobs/job-123')
+      expect(second_pending_response.body[:status]).to eq('pending')
+
+      ready_response = connection.get('/jobs/job-123')
+      expect(ready_response.body[:status]).to eq('ready')
+
+      delete_response = connection.delete('/jobs/job-123')
+      expect(delete_response.status).to eq(204)
+
+      terminal_response = connection.get('/jobs/job-123')
+      expect(terminal_response.status).to eq(404)
+    end
+
+    it 'does not allow deleting before creation and reports the expected step' do
+      expect { connection.delete('/jobs/job-123') }.to raise_error(
+        described_class::Stubs::InvalidScenarioStep,
+        %r{before a resource was created.*POST /jobs}m
+      )
+
+      expect(connection.get('/ordinary').body).to eq('ordinary')
+    end
+
+    it 'does not consume a later state stub when the current state does not allow the request' do
+      connection.post('/jobs', JSON.dump(type: 'report'))
+
+      expect { connection.delete('/jobs/job-123') }.to raise_error(
+        described_class::Stubs::InvalidScenarioStep,
+        %r{not allowed.*state :pending.*Allowed requests in this state: GET /jobs/:id}
+      )
+    end
+
+    it 'isolates sessions' do
+      scenario = stubs.scenario(:resource, initial_state: :creating) do
+        state :creating do
+          post '/resources', to: :ready do |env, session|
+            id = JSON.parse(env.body)['id']
+            session.id = id
+            session.data[:resource_id] = id
+            [201, {}, { id: id }]
+          end
+        end
+
+        state :ready do
+          get '/resources/:id' do |_env, session|
+            [200, {}, { id: session.data[:resource_id] }]
+          end
+        end
+      end
+
+      first = connection.post('/resources', JSON.dump(id: 'one'))
+      second = connection.post('/resources', JSON.dump(id: 'two'))
+      expect(first.status).to eq(201)
+      expect(second.status).to eq(201)
+      expect(connection.get('/resources/one').body[:id]).to eq('one')
+      expect(connection.get('/resources/two').body[:id]).to eq('two')
+      expect(scenario.sessions.keys).to contain_exactly('one', 'two')
+      expect(scenario.session_state('one')).to eq(:ready)
+    end
+
+    it 'keeps structurally similar scenarios isolated' do
+      stubs.scenario(:second, initial_state: :new) do
+        post('/second-jobs', to: :ready) { [201, {}, { id: 'second' }] }
+        state(:ready) { get('/second-jobs/other') { [200, {}, 'second'] } }
+      end
+
+      connection.post('/jobs', JSON.dump(type: 'report'))
+      second_create = connection.post('/second-jobs')
+      expect(second_create.status).to eq(201)
+      expect(connection.get('/jobs/job-123').body[:id]).to eq('job-123')
+      expect(connection.get('/second-jobs/other').body).to eq('second')
+    end
+
+    context 'when creation fails' do
+      let(:stubs) do
+        described_class::Stubs.new do |stubs|
+          stubs.scenario(:job, initial_state: :creating) do
+            state :creating do
+              post '/jobs/:id' do
+                [409, {}, 'quota exceeded']
+              end
+            end
+
+            state :ready do
+              get '/jobs/job-123' do
+                [200, {}, 'ready']
+              end
+            end
+          end
+        end
+      end
+
+      it 'reports that polling followed a failed creation' do
+        failed_create = connection.post('/jobs/job-123')
+        expect(failed_create.status).to eq(409)
+
+        expect { connection.get('/jobs/job-123') }.to raise_error(
+          described_class::Stubs::ScenarioCreationFailed,
+          /creation failed with status 409.*before polling/m
+        )
+      end
+
+      it 'reports that polling followed a creation exception' do
+        stubs.scenario(:broken_job, initial_state: :creating) do
+          state :creating do
+            post('/broken-jobs') { raise Faraday::ConnectionFailed, 'boom' }
+          end
+
+          state :ready do
+            get('/broken-jobs/:id') { [200, {}, 'ready'] }
+          end
+        end
+
+        expect { connection.post('/broken-jobs') }.to raise_error(Faraday::ConnectionFailed, 'boom')
+
+        expect { connection.get('/broken-jobs/job-123') }.to raise_error(
+          described_class::Stubs::ScenarioCreationFailed,
+          /creation failed with Faraday::ConnectionFailed.*before polling/
+        )
+      end
+    end
+  end
+
   describe '#clear' do
     it 'removes pending stubs' do
       stubs.clear
@@ -455,6 +621,19 @@ RSpec.describe Faraday::Adapter::Test do
     it 'leaves the stubs empty' do
       stubs.clear
       expect(stubs).to be_empty
+    end
+
+    it 'removes scenarios and their session state' do
+      stubs.scenario(:temporary, initial_state: :new) do
+        post('/temporary', to: :ready) { [201, {}, { id: 't1' }] }
+        state(:ready) { get('/temporary/:id') { [200, {}, 'ready'] } }
+      end
+
+      connection.post('/temporary')
+      stubs.clear
+
+      expect(stubs).to be_empty
+      expect { connection.get('/temporary/t1') }.to raise_error(described_class::Stubs::NotFound)
     end
   end
 end

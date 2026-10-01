@@ -115,6 +115,44 @@ it from being cached between different tests.
 Faraday.default_connection = nil
 ```
 
+## Simulating informational responses (100/103)
+
+The Test adapter supports informational responses. A stub block that accepts a
+third block argument receives an `emitter` you can use to send `100 Continue`
+or `103 Early Hints` responses, in order, before returning the final response:
+
+```ruby
+stubs.get('/page') do |env, meta, emitter|
+  emitter.continue
+  emitter.early_hints('Link' => '</style.css>; rel=preload; as=style')
+  emitter.early_hints('Link' => '</app.js>; rel=modulepreload')
+  [200, { 'Content-Type' => 'text/html' }, '<html></html>']
+end
+
+received = []
+connection.get('/page') do |request|
+  request.options.on_information = proc do |information|
+    received << [information.status, information.headers['Link']]
+  end
+end
+# received => [[100, nil],
+#             [103, "</style.css>; rel=preload; as=style"],
+#             [103, "</app.js>; rel=modulepreload"]]
+```
+
+Use `emitter.information(status, headers)` for any other `1xx` status, and
+`emitter.fail!` to simulate the request failing after one or more
+informational responses have been delivered:
+
+```ruby
+stubs.get('/page') do |env, meta, emitter|
+  emitter.early_hints('Link' => '</style.css>; rel=preload')
+  emitter.fail!('connection reset') # raises Faraday::Adapter::Test::Emitter::MidwayFailure
+end
+```
+
+See [Informational Responses] for the full semantics.
+
 ## Examples
 
 Working [RSpec] and [test/unit] examples for a fictional JSON API client are
@@ -122,3 +160,4 @@ available.
 
 [RSpec]: https://github.com/lostisland/faraday/blob/main/examples/client_spec.rb
 [test/unit]: https://github.com/lostisland/faraday/blob/main/examples/client_test.rb
+[Informational Responses]: /advanced/informational-responses.md

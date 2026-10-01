@@ -15,6 +15,7 @@ All these options are optional.
 | `:boundary`       | String            | nil                                                            | The boundary string for multipart requests.                             |
 | `:context`        | Hash              | nil                                                            | Arbitrary data that you can pass to your request.                       |
 | `:on_data`        | Proc              | nil                                                            | A callback that will be called when data is received. See [Streaming]   |
+| `:on_information` | Proc              | nil                                                            | A callback called, in arrival order, with each `1xx` informational response (e.g. 103 Early Hints) as an immutable `Faraday::Response::Information`. Requires adapter support. See [Informational Responses] |
 
 ## Example
 
@@ -37,3 +38,4 @@ end
 
 [ProxyOptions]: /customization/proxy-options.md
 [Streaming]: /advanced/streaming-responses.md
+[Informational Responses]: /advanced/informational-responses.md

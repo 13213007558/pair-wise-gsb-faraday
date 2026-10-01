@@ -60,7 +60,72 @@ module Faraday
     #   resp = test.post '/foo', JSON.dump(name: 'YK', created_at: Time.now)
     #   resp.status # => 200
     class Test < Faraday::Adapter
+      self.supports_informational_responses = true
       attr_accessor :stubs
+
+      # Emitter is yielded as the third block argument to a stubbed request
+      # (after env and meta). It simulates informational responses (1xx)
+      # arriving before the final response.
+      #
+      # @example
+      #   stub.get '/resource.json' do |env, meta, emitter|
+      #     emitter.continue
+      #     emitter.early_hints('Link' => '</style.css>; rel=preload')
+      #     [200, {'Content-Type' => 'text/plain'}, 'hi world']
+      #   end
+      class Emitter
+        # Error raised when a stubbed request simulates a failure after some
+        # informational responses have already been emitted.
+        class MidwayFailure < Faraday::Error
+          def initialize(message = 'stubbed request failed before the final response')
+            super
+          end
+        end
+
+        # @param adapter [Faraday::Adapter::Test] the running test adapter
+        # @param env [Faraday::Env] the request env
+        def initialize(adapter, env)
+          @adapter = adapter
+          @env = env
+        end
+
+        # Emits a 100 Continue informational response.
+        #
+        # @param headers [Hash, nil]
+        # @return [Faraday::Response::Information]
+        def continue(headers = nil)
+          information(100, headers)
+        end
+
+        # Emits a 103 Early Hints informational response.
+        #
+        # @param headers [Hash, nil] typically including Link headers
+        # @return [Faraday::Response::Information]
+        def early_hints(headers = nil)
+          information(103, headers)
+        end
+
+        # Emits an arbitrary 1xx informational response.
+        #
+        # @param status [Integer] informational status (100-199)
+        # @param headers [Hash, nil]
+        # @return [Faraday::Response::Information]
+        def information(status, headers = nil)
+          @adapter.send(:informational_response, @env, status, headers)
+        end
+
+        # Simulates the request failing before the final response arrives
+        # (e.g. a network error or cancellation). Pending callbacks are
+        # released and further informational responses are rejected.
+        #
+        # @param error [Exception, String, nil] the simulated failure
+        # @raise [Faraday::Adapter::Test::Emitter::MidwayFailure]
+        def fail!(error = nil)
+          failure = error.is_a?(Exception) ? error : MidwayFailure.new(error.to_s)
+          @adapter.send(:abort_response, @env, failure)
+          raise failure
+        end
+      end
 
       # A stack of Stubs
       class Stubs
@@ -285,25 +350,33 @@ module Faraday
           raise Stubs::NotFound, "no stubbed request for #{env[:method]} " \
                                  "#{env[:url]} #{env[:body]} #{env[:headers]}"
         end
+        emitter = Emitter.new(self, env)
 
+        # Stubs keep their historical |env, meta| signature. The emitter is
+        # offered as a third argument, accessible via a splat or arity 3.
         block_arity = stub.block.arity
         params = if block_arity >= 0
-                   [env, meta].take(block_arity)
+                   [env, meta, emitter].take(block_arity)
                  else
-                   [env, meta]
+                   [env, meta, emitter]
                  end
 
         timeout = request_timeout(:open, env[:request])
         timeout ||= request_timeout(:read, env[:request])
 
-        status, headers, body =
-          if timeout
-            ::Timeout.timeout(timeout, Faraday::TimeoutError) do
+        begin
+          status, headers, body =
+            if timeout
+              ::Timeout.timeout(timeout, Faraday::TimeoutError) do
+                stub.block.call(*params)
+              end
+            else
               stub.block.call(*params)
             end
-          else
-            stub.block.call(*params)
-          end
+        rescue StandardError => e
+          abort_response(env, e) unless env.response.aborted?
+          raise
+        end
 
         # We need to explicitly pass `reason_phrase = nil` here to avoid keyword args conflicts.
         #   See https://github.com/lostisland/faraday/issues/1444

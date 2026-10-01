@@ -32,6 +32,31 @@ module Faraday
 
     self.supports_parallel = false
 
+    # This module marks an Adapter as supporting informational responses
+    # (1xx status codes, such as 100 Continue and 103 Early Hints).
+    #
+    # Faraday::Adapter extends this module. Adapters opt in by setting
+    # `self.supports_informational_responses = true` and promise to deliver
+    # 1xx responses, in arrival order, through the {#informational_response}
+    # helper. Adapters that leave the flag as false never emit informational
+    # events.
+    module InformationalResponses
+      attr_writer :supports_informational_responses
+
+      def supports_informational_responses?
+        @supports_informational_responses
+      end
+
+      def inherited(subclass)
+        super
+        subclass.supports_informational_responses = supports_informational_responses?
+      end
+    end
+
+    extend InformationalResponses
+
+    self.supports_informational_responses = false
+
     def initialize(_app = nil, opts = {}, &block)
       @app = lambda(&:response)
       @connection_options = opts
@@ -61,10 +86,66 @@ module Faraday
 
     def call(env)
       env.clear_body if env.needs_body?
-      env.response = Response.new
+      env.response = Response.new unless env.response.is_a?(Response)
+      register_information_callback(env)
     end
 
     private
+
+    # Registers the optional per-request `on_information` Proc provided via
+    # the request options so callers can observe 1xx responses as they arrive.
+    #
+    # @param env [Faraday::Env] the request env
+    # @return [void]
+    def register_information_callback(env)
+      callback = env.request&.on_information
+      env.response.on_information(&callback) if callback.is_a?(Proc)
+    end
+
+    # Delivers an informational HTTP response (a 1xx status, such as 100
+    # Continue or 103 Early Hints) to registered listeners before the final
+    # response is saved.
+    #
+    # Each call provides listeners with an independent, immutable snapshot
+    # of the given headers. Informational responses do not update the env's
+    # status or headers, do not trigger on_complete callbacks and do not
+    # affect JSON decoding or error-raising middleware. The final response
+    # still determines the request status.
+    #
+    # Only available on adapters that declare the capability by setting
+    # `self.supports_informational_responses = true`; calling it from an
+    # adapter without the capability raises, since such an adapter must never
+    # fabricate informational events.
+    #
+    # @param env [Faraday::Env] the request env
+    # @param status [Integer, #to_i] informational HTTP status code (1xx)
+    # @param headers [Hash, nil] headers received with the informational
+    #   response
+    #
+    # @return [Faraday::Response::Information] the delivered, immutable
+    #   snapshot
+    def informational_response(env, status, headers = nil)
+      unless self.class.supports_informational_responses?
+        raise Faraday::Error,
+              "#{self.class} does not support informational responses. " \
+              'Set self.supports_informational_responses = true to enable them.'
+      end
+
+      env.response.information!(status, headers)
+    end
+
+    # Marks the response as aborted without a final response. Adapters should
+    # call this when the request is cancelled or fails before the final
+    # response arrives (after potentially delivering informational responses)
+    # so that late 1xx events are rejected and pending callbacks released.
+    #
+    # @param env [Faraday::Env] the request env
+    # @param error [Exception, String, nil] the reason for the abort
+    #
+    # @return [Exception] the stored abort error
+    def abort_response(env, error = nil)
+      env.response.abort(error)
+    end
 
     def save_response(env, status, body, headers = nil, reason_phrase = nil, finished: true)
       env.status = status

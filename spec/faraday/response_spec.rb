@@ -81,4 +81,110 @@ RSpec.describe Faraday::Response do
       expect(subject.env).to eq(callback_env)
     end
   end
+
+  describe 'informational responses' do
+    subject { Faraday::Response.new }
+
+    it 'delivers 1xx snapshots to subscribers in arrival order' do
+      received = []
+      subject.on_information { |info| received << info }
+
+      subject.information!(100, {})
+      subject.information!(103, 'Link' => '</a.css>; rel=preload')
+
+      expect(received.map(&:status)).to eq([100, 103])
+      expect(subject.informations.map(&:status)).to eq([100, 103])
+    end
+
+    it 'replays existing snapshots to new subscribers while in flight' do
+      subject.information!(100, {})
+      subject.information!(103, {})
+      replayed = []
+
+      subject.on_information { |info| replayed << info.status }
+
+      expect(replayed).to eq([100, 103])
+    end
+
+    it 'returns independent snapshots arrays' do
+      subject.information!(100, {})
+      first = subject.informations
+      first << :tampered
+
+      expect(subject.informations.map(&:status)).to eq([100])
+    end
+
+    it 'requires a block' do
+      expect { subject.on_information }.to raise_error(ArgumentError)
+    end
+
+    it 'rejects invalid status codes' do
+      expect { subject.information!(200, {}) }
+        .to raise_error(ArgumentError, /100-199/)
+      expect { subject.information!(99, {}) }
+        .to raise_error(ArgumentError, /100-199/)
+    end
+
+    it 'rejects late informational events after finish' do
+      subject.finish(env)
+
+      expect { subject.information!(103, {}) }
+        .to raise_error(Faraday::Response::LateInformationError)
+    end
+
+    it 'does not invoke on_complete on informational events' do
+      completed = false
+      subject.on_complete { completed = true }
+
+      subject.information!(103, {})
+
+      expect(completed).to be(false)
+      expect(subject.finished?).to be(false)
+    end
+
+    it 'does not accept new informational subscribers after finish' do
+      subject.finish(env)
+      delivered = []
+
+      result = subject.on_information { |info| delivered << info }
+
+      expect(result).to equal(subject)
+      expect(delivered).to be_empty
+    end
+
+    it 'aborts with a callback error and rejects further events' do
+      subject.on_information { raise 'boom' }
+
+      expect { subject.information!(103, {}) }.to raise_error(RuntimeError, 'boom')
+      expect(subject.aborted?).to be(true)
+      expect(subject.abort_error.message).to eq('boom')
+      expect(subject.finished?).to be(false)
+      expect { subject.information!(100, {}) }
+        .to raise_error(Faraday::Response::LateInformationError)
+      expect { subject.finish(env) }.to raise_error(RuntimeError, 'boom')
+      expect { subject.on_complete { } }.to raise_error(RuntimeError, 'boom')
+    end
+
+    it 'supports explicit cancellation with a clear end state' do
+      subject.information!(100, {})
+      error = Faraday::ConnectionFailed.new('cancelled')
+
+      result = subject.abort(error)
+
+      expect(result).to equal(error)
+      expect(subject.aborted?).to be(true)
+      expect(subject.abort_error).to equal(error)
+      expect(subject.informations.map(&:status)).to eq([100])
+      expect { subject.on_information { } }
+        .to raise_error(Faraday::ConnectionFailed, 'cancelled')
+    end
+
+    it 'keeps abort idempotent' do
+      first = subject.abort('one')
+      second = subject.abort('two')
+
+      expect(second).to equal(first)
+      expect(subject.abort_error.message).to eq('one')
+    end
+  end
 end

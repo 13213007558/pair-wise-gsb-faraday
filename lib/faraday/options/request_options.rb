@@ -38,11 +38,18 @@ module Faraday
   #   #
   #   # @!attribute on_data
   #   #   @return [Proc] callback invoked with each chunk when streaming the response
+  #   #
+  #   # @!attribute on_information
+  #   #   @return [Proc] callback invoked, in arrival order, with each 1xx
+  #   #   informational response (e.g. 100 Continue or 103 Early Hints) before
+  #   #   the final response. The callback receives an immutable
+  #   #   Faraday::Response::Information snapshot. Only adapters that declare
+  #   #   support for informational responses invoke it.
   #   class RequestOptions < Options; end
   RequestOptions = Options.new(:params_encoder, :proxy, :bind,
                                :timeout, :open_timeout, :read_timeout,
                                :write_timeout, :boundary, :oauth,
-                               :context, :on_data) do
+                               :context, :on_data, :on_information) do
     def []=(key, value)
       if key && key.to_sym == :proxy
         super(key, value ? ProxyOptions.from(value) : nil)

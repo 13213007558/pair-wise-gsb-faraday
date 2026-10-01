@@ -20,6 +20,8 @@ These guidelines ensure all AI agents (Copilot, Claude, Cursor, etc.) contribute
 ## Adapter Patterns
 - Adapters must extend `Faraday::MiddlewareRegistry` and register themselves.
 - If providing parallel support, include the `Parallelism` module and set `supports_parallel = true`.
+- Optional capabilities are declared explicitly: set `self.supports_informational_responses = true` only when the adapter forwards real 1xx responses. Emit them, in arrival order, via the private `informational_response(env, status, headers)` helper, and call `abort_response(env, error)` on cancellation/mid-flight failure. Never fabricate informational events when the capability is off.
+- Informational responses (100/103) are delivered as immutable `Faraday::Response::Information` snapshots. They must not mutate `env.status`/`env.response_headers`, trigger `on_complete`, JSON decoding, or error middleware; the final response remains authoritative.
 - Implement required methods (`build_connection`, `close`, etc.) as seen in existing adapters.
 - Keep each adapter in its own file under `lib/faraday/adapter/`.
 

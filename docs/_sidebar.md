@@ -27,7 +27,9 @@
     * [Overview](adapters/custom/index.md)
     * [Parallel Requests](adapters/custom/parallel-requests.md)
     * [Streaming Responses](adapters/custom/streaming.md)
+    * [Informational Responses](adapters/custom/informational-responses.md)
     * [Test your adapter](adapters/custom/testing.md)
-* Advanced Features
-  * [Parallel Requests](advanced/parallel-requests.md)
-  * [Streaming Responses](advanced/streaming-responses.md)
+  * Advanced Features
+    * [Parallel Requests](advanced/parallel-requests.md)
+    * [Streaming Responses](advanced/streaming-responses.md)
+    * [Informational Responses](advanced/informational-responses.md)

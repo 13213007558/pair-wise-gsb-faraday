@@ -29,6 +29,15 @@ module Faraday
 
     def_delegator :headers, :[]
 
+    # Parses the RFC 8288 Link header using this response URL as the context.
+    #
+    # @return [Array<Faraday::Link>]
+    def links
+      return [] unless finished?
+
+      Faraday::Link.parse(headers['Link'], base: url)
+    end
+
     def body
       finished? ? env.body : nil
     end

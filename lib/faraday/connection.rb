@@ -452,6 +452,31 @@ module Faraday
       builder.build_response(self, request)
     end
 
+    # Lazily follows RFC 8288 Link rel="next" responses.
+    #
+    # @param url [String, URI, nil] First page URL.
+    # @param params [Hash, nil] Query params for the first page only.
+    # @param headers [Hash, nil] Headers for page requests.
+    # @param max_pages [Integer] Maximum number of pages to request.
+    # @param cross_origin [:deny, :follow, #call] Policy used before following a
+    #   next link on another origin.
+    # @param sensitive_headers [Array<String>] Header names removed from
+    #   cross-origin requests.
+    # @return [Enumerator<Faraday::Response>] Pages requested lazily.
+    def paginate(
+      url = nil, params = nil, headers = nil,
+      max_pages: Faraday::Pagination::DEFAULT_MAX_PAGES, cross_origin: :deny,
+      sensitive_headers: Faraday::Pagination::DEFAULT_SENSITIVE_HEADERS,
+      &block
+    )
+      Faraday::Pagination.new(
+        self, url, params, headers,
+        max_pages: max_pages,
+        cross_origin: cross_origin,
+        sensitive_headers: sensitive_headers
+      ).each(&block)
+    end
+
     # Creates and configures the request object.
     #
     # @param method [Symbol]

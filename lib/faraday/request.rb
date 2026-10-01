@@ -134,6 +134,7 @@ module Faraday
 end
 
 require 'faraday/request/authorization'
+require 'faraday/request/circuit_breaker'
 require 'faraday/request/instrumentation'
 require 'faraday/request/json'
 require 'faraday/request/url_encoded'

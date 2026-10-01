@@ -196,6 +196,18 @@ module Faraday
   class ParsingError < Error
   end
 
+  # Raised by the circuit breaker middleware when a request is rejected
+  # before it reaches the adapter.
+  class CircuitBreakerOpenError < Error
+    attr_reader :service_key, :state
+
+    def initialize(service_key, state)
+      @service_key = service_key
+      @state = state
+      super("circuit breaker is open for #{service_key}")
+    end
+  end
+
   # Raised by Faraday::Middleware and subclasses when invalid default_options are used
   class InitializationError < Error
   end

@@ -16,6 +16,7 @@ content type.
 * [`UrlEncoded`][url_encoded] converts a `Faraday::Request#body` hash of key/value pairs into a url-encoded request body.
 * [`Json Request`][json-request] converts a `Faraday::Request#body` hash of key/value pairs into a JSON request body.
 * [`Instrumentation`][instrumentation] allows to instrument requests using different tools.
+* [`Circuit Breaker`][circuit-breaker] stops requests to a failing service and probes recovery after a cooldown.
 
 
 ### Response Middleware
@@ -32,6 +33,7 @@ before returning it.
 [url_encoded]:          middleware/included/url-encoding
 [json-request]:         middleware/included/json#json-requests
 [instrumentation]:      middleware/included/instrumentation
+[circuit-breaker]:      middleware/included/circuit-breaker
 [json-response]:        middleware/included/json#json-responses
 [logger]:               middleware/included/logging
 [raise_error]:          middleware/included/raising-errors

@@ -67,10 +67,17 @@ module Faraday
         class NotFound < StandardError
         end
 
+        # Raised when a request belongs to a named scenario but is not
+        # acceptable in the scenario's current state. The message
+        # describes the expected next step, and no later step is consumed.
+        class ScenarioMismatch < NotFound
+        end
+
         def initialize(strict_mode: false)
           # { get: [Stub, Stub] }
           @stack = {}
           @consumed = {}
+          @scenarios = []
           @strict_mode = strict_mode
           @stubs_mutex = Monitor.new
           yield(self) if block_given?
@@ -83,20 +90,25 @@ module Faraday
         # @param env [Faraday::Env]
         def match(env)
           request_method = env[:method]
-          return false unless @stack.key?(request_method)
-
-          stack = @stack[request_method]
-          consumed = (@consumed[request_method] ||= [])
-
           @stubs_mutex.synchronize do
+            @scenarios.each do |scenario|
+              matched = scenario.match(env)
+              return matched if matched
+            end
+
+            return false unless @stack.key?(request_method)
+
+            stack = @stack[request_method]
+            consumed = (@consumed[request_method] ||= [])
+
             stub, meta = matches?(stack, env)
             if stub
               removed = stack.delete(stub)
               consumed << removed unless removed.nil?
               return stub, meta
             end
+            matches?(consumed, env)
           end
-          matches?(consumed, env)
         end
 
         def get(path, headers = {}, &block)
@@ -127,11 +139,24 @@ module Faraday
           new_stub(:options, path, headers, &block)
         end
 
-        # Removes all stubs, including the ones that have already been consumed.
+        # Defines a named scenario: a small state machine of the requests
+        # each state accepts and the transitions a successful request
+        # performs. See Faraday::Adapter::Test::Scenario.
+        def scenario(name)
+          scenario = Scenario.new(name)
+          yield scenario
+          scenario.validate!
+          @scenarios << scenario
+          scenario
+        end
+
+        # Removes all stubs, including the ones that have already been
+        # consumed, and resets every scenario so a fresh session can start.
         def clear
           @stubs_mutex.synchronize do
             @stack.clear
             @consumed.clear
+            @scenarios.each(&:reset!)
           end
         end
 
@@ -146,6 +171,9 @@ module Faraday
                 "Expected #{method} #{stub}."
               end
             )
+          end
+          @scenarios.each do |scenario|
+            failed_stubs.concat(scenario.unfinished_messages)
           end
           raise failed_stubs.join(' ') unless failed_stubs.empty?
         end
@@ -317,3 +345,5 @@ module Faraday
 end
 
 Faraday::Adapter.register_middleware(test: Faraday::Adapter::Test)
+
+require 'faraday/adapter/test/scenario'

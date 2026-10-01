@@ -457,4 +457,258 @@ RSpec.describe Faraday::Adapter::Test do
       expect(stubs).to be_empty
     end
   end
+  describe 'named scenarios' do
+    let(:stubs) do
+      described_class::Stubs.new do |s|
+        s.scenario(:resource_lifecycle) do |scenario|
+          scenario.state :empty do |state|
+            state.on :post, '/resources', to: :pending do |_env, session|
+              session[:id] = "res-#{session.number}"
+              [201, {}, JSON.dump(id: session[:id], status: 'pending')]
+            end
+          end
+          scenario.state :pending do |state|
+            state.on :get, '/resources/{id}' do |_env, session|
+              [200, {}, JSON.dump(id: session[:id], status: 'pending')]
+            end
+            state.on :delete, '/resources/{id}', to: :gone do |_env, _session|
+              [204, {}, '']
+            end
+          end
+          scenario.state :gone, terminal: true
+        end
+      end
+    end
+
+    let(:connection) do
+      Faraday.new do |builder|
+        builder.adapter :test, stubs
+      end
+    end
+
+    def create_resource
+      connection.post('/resources')
+    end
+
+    it 'runs the create-poll-delete lifecycle' do
+      expect(create_resource.status).to eq 201
+      expect(connection.get('/resources/res-1').body).to include '"id":"res-1"'
+      expect(connection.delete('/resources/res-1').status).to eq 204
+      expect { stubs.verify_stubbed_calls }.not_to raise_error
+    end
+
+    it 'allows repeated polling and reuses the captured id in every response' do
+      create_resource
+      bodies = Array.new(3) { connection.get('/resources/res-1').body }
+      expect(bodies.uniq).to eq [JSON.dump(id: 'res-1', status: 'pending')]
+    end
+
+    it 'keeps plain stubs working alongside scenarios' do
+      stubs.get('/hello') { [200, {}, 'hello'] }
+      expect(connection.get('/hello').body).to eq 'hello'
+      expect(create_resource.status).to eq 201
+    end
+
+    it 'raises Stubs::NotFound for requests unrelated to any scenario' do
+      expect { connection.get('/unrelated') }.to raise_error(described_class::Stubs::NotFound)
+    end
+
+    context 'when a request does not fit the current state' do
+      it 'rejects delete-before-create without consuming the delete step' do
+        expect { connection.delete('/resources/res-1') }.to raise_error(
+          described_class::Stubs::ScenarioMismatch,
+          %r{scenario :resource_lifecycle cannot accept DELETE .*/resources/res-1 yet.*POST /resources.*no later step was consumed}m,
+        )
+
+        expect(create_resource.status).to eq 201
+        expect(connection.get('/resources/res-1').status).to eq 200
+        expect(connection.delete('/resources/res-1').status).to eq 204
+      end
+
+      it 'reports the failed create when polling continues after a 500' do
+        flaky = true
+        stubs.scenario(:flaky_create) do |scenario|
+          scenario.state :empty do |state|
+            state.on :post, '/jobs', to: :ready do |_env, session|
+              session[:id] = 'job-1'
+              flaky ? [500, {}, 'boom'] : [201, {}, JSON.dump(id: session[:id])]
+            end
+          end
+          scenario.state :ready, terminal: true do |state|
+            state.on(:get, '/jobs/{id}') { |_env, session| [200, {}, "job #{session[:id]}"] }
+          end
+        end
+
+        expect(connection.post('/jobs').status).to eq 500
+        expect { connection.get('/jobs/job-1') }.to raise_error(
+          described_class::Stubs::ScenarioMismatch,
+          /state :empty.*POST \/jobs responded 500 and did not advance/m,
+        )
+
+        flaky = false
+        expect(connection.post('/jobs').status).to eq 201
+        expect(connection.get('/jobs/job-1').body).to eq 'job job-1'
+      end
+
+      it 'gives delete-before-create and poll-after-failure distinct messages' do
+        delete_error = begin
+          connection.delete('/resources/res-1')
+        rescue described_class::Stubs::ScenarioMismatch => e
+          e.message
+        end
+
+        stubs.scenario(:failing_create) do |scenario|
+          scenario.state(:empty) do |state|
+            state.on(:post, '/jobs', to: :ready) { [500, {}, 'boom'] }
+          end
+          scenario.state(:ready, terminal: true) do |state|
+            state.on(:get, '/jobs/{id}') { [200, {}, 'ok'] }
+          end
+        end
+        connection.post('/jobs')
+        poll_error = begin
+          connection.get('/jobs/job-1')
+        rescue described_class::Stubs::ScenarioMismatch => e
+          e.message
+        end
+
+        expect(delete_error).to include('DELETE')
+        expect(delete_error).not_to include('did not advance')
+        expect(poll_error).to include('responded 500 and did not advance')
+        expect(poll_error).not_to eq delete_error
+      end
+
+      it 'raises a ScenarioMismatch that is also a Stubs::NotFound' do
+        expect { connection.delete('/resources/res-1') }.to raise_error(described_class::Stubs::NotFound)
+      end
+    end
+
+    context 'with several sessions of the same scenario' do
+      it 'keeps sessions isolated and routes by captured data' do
+        expect(create_resource.status).to eq 201
+        expect(create_resource.status).to eq 201
+
+        expect(connection.get('/resources/res-2').body).to include '"id":"res-2"'
+        expect(connection.get('/resources/res-1').body).to include '"id":"res-1"'
+
+        expect(connection.delete('/resources/res-1').status).to eq 204
+        expect(connection.get('/resources/res-2').status).to eq 200
+        expect(connection.delete('/resources/res-2').status).to eq 204
+        expect { stubs.verify_stubbed_calls }.not_to raise_error
+      end
+
+      it 'rejects an id no session captured' do
+        create_resource
+        expect { connection.get('/resources/res-9') }.to raise_error(
+          described_class::Stubs::ScenarioMismatch,
+          %r{session #1 is in state :pending and expects one of: GET /resources/\{id\}, DELETE /resources/\{id\}},
+        )
+      end
+    end
+
+    describe 'terminal state checks' do
+      it 'passes when every session reached a terminal state' do
+        create_resource
+        connection.delete('/resources/res-1')
+        expect { stubs.verify_stubbed_calls }.not_to raise_error
+      end
+
+      it 'fails when a session stops before a terminal state' do
+        create_resource
+        connection.get('/resources/res-1')
+        expect { stubs.verify_stubbed_calls }.to raise_error(
+          /Scenario :resource_lifecycle session #1 stopped in state :pending; expected terminal state :gone/,
+        )
+      end
+
+      it 'fails when the scenario never started' do
+        expect { stubs.verify_stubbed_calls }.to raise_error(
+          %r{Scenario :resource_lifecycle never started; expected one of: POST /resources},
+        )
+      end
+    end
+
+    describe 'dynamic transitions' do
+      let(:stubs) do
+        described_class::Stubs.new do |s|
+          s.scenario(:job) do |scenario|
+            scenario.state :idle do |state|
+              state.on :post, '/jobs', to: :running do |_env, session|
+                session[:id] = 'job-1'
+                session[:polls] = 0
+                [201, {}, 'created']
+              end
+            end
+            scenario.state :running do |state|
+              state.on :get, '/jobs/{id}' do |_env, session|
+                session[:polls] += 1
+                session.transition_to(:done) if session[:polls] >= 2
+                [200, {}, 'running']
+              end
+            end
+            scenario.state :done, terminal: true do |state|
+              state.on(:get, '/jobs/{id}') { [200, {}, 'finished'] }
+            end
+          end
+        end
+      end
+
+      it 'advances when the step block requests a transition' do
+        connection.post('/jobs')
+        expect(connection.get('/jobs/job-1').body).to eq 'running'
+        expect(connection.get('/jobs/job-1').body).to eq 'running'
+        expect(connection.get('/jobs/job-1').body).to eq 'finished'
+        expect { stubs.verify_stubbed_calls }.not_to raise_error
+      end
+    end
+
+    describe 'regexp steps' do
+      let(:stubs) do
+        described_class::Stubs.new do |s|
+          s.scenario(:widgets) do |scenario|
+            scenario.state :ready, terminal: true do |state|
+              state.on :get, %r{\A/widgets/(\d+)\z} do |_env, _session, meta|
+                [200, {}, "widget #{meta[:match_data][1]}"]
+              end
+            end
+          end
+        end
+      end
+
+      it 'yields the match data to the step block' do
+        expect(connection.get('/widgets/42').body).to eq 'widget 42'
+      end
+    end
+
+    describe '#clear' do
+      it 'resets scenario sessions so the lifecycle can start over' do
+        create_resource
+        connection.delete('/resources/res-1')
+        stubs.clear
+
+        expect(create_resource.status).to eq 201
+        expect(connection.get('/resources/res-1').status).to eq 200
+        expect(connection.delete('/resources/res-1').status).to eq 204
+        expect { stubs.verify_stubbed_calls }.not_to raise_error
+      end
+    end
+
+    describe 'validation' do
+      it 'rejects transitions to unknown states' do
+        expect do
+          described_class::Stubs.new do |s|
+            s.scenario(:broken) do |scenario|
+              scenario.state(:only) { |state| state.on(:get, '/x', to: :nowhere) { [200, {}, ''] } }
+            end
+          end
+        end.to raise_error(ArgumentError, /unknown state :nowhere/)
+      end
+
+      it 'rejects scenarios without states' do
+        expect do
+          described_class::Stubs.new { |s| s.scenario(:empty_scenario) { |_scenario| nil } }
+        end.to raise_error(ArgumentError, /defines no states/)
+      end
+    end
+  end
 end

@@ -115,6 +115,69 @@ it from being cached between different tests.
 Faraday.default_connection = nil
 ```
 
+## Named scenarios
+
+Plain stubs match each request on its own, which cannot prove that calls
+happen in the right order. Named scenarios describe a stateful API
+workflow instead: which requests each state accepts, and how a successful
+request moves the scenario to the next state.
+
+```ruby
+stubs = Faraday::Adapter::Test::Stubs.new do |s|
+  s.scenario(:resource_lifecycle) do |scenario|
+    scenario.state :empty do |state|
+      state.on :post, '/resources', to: :pending do |_env, session|
+        session[:id] = 'res-1'
+        [201, {}, JSON.dump(id: session[:id], status: 'pending')]
+      end
+    end
+    scenario.state :pending do |state|
+      state.on :get, '/resources/{id}' do |_env, session|
+        [200, {}, JSON.dump(id: session[:id], status: 'pending')]
+      end
+      state.on :delete, '/resources/{id}', to: :gone do
+        [204, {}, '']
+      end
+    end
+    scenario.state :gone, terminal: true
+  end
+end
+```
+
+The first defined state is the initial one. A request that matches the
+initial state starts a new session, and every session keeps its own state
+and captured data, so several resources can go through the lifecycle
+independently. A step without a `to:` transition keeps the session in its
+current state, which makes repeated polling natural; a step block may also
+call `session.transition_to` to pick the next state dynamically.
+
+Path templates like `/resources/{id}` capture a segment into the session
+the first time they match and require the same value afterwards, so later
+responses can reference data captured by earlier requests of the same
+session. Steps may also use a Regexp path, and the block then receives the
+match data as its third argument.
+
+A request that does not fit the current state raises
+`Faraday::Adapter::Test::Stubs::ScenarioMismatch` (a subclass of
+`Stubs::NotFound`) explaining the expected next step, and no later step is
+consumed. Transitions only happen when the response status is below 400,
+so polling after a failed create reports the failed step instead of
+silently advancing:
+
+```
+scenario :resource_lifecycle cannot accept DELETE http:/resources/res-1 yet;
+expected one of: POST /resources; no later step was consumed
+
+scenario :resource_lifecycle cannot accept GET http:/resources/res-1 yet;
+session #1 is in state :empty and expects one of: POST /resources;
+session #1 step POST /resources responded 500 and did not advance;
+no later step was consumed
+```
+
+`verify_stubbed_calls` also checks that every scenario session reached a
+terminal state, and `clear` resets all sessions so each test starts over.
+Plain stubs and scenarios can be mixed freely on the same `Stubs` object.
+
 ## Examples
 
 Working [RSpec] and [test/unit] examples for a fictional JSON API client are

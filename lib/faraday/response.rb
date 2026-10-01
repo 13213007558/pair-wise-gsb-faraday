@@ -2,6 +2,8 @@
 
 require 'forwardable'
 
+require 'faraday/link_header'
+
 module Faraday
   # Response represents an HTTP response from making an HTTP request.
   class Response
@@ -31,6 +33,12 @@ module Faraday
 
     def body
       finished? ? env.body : nil
+    end
+
+    # @param base [URI, String, nil] base URI for relative Link references
+    # @return [Array<Faraday::LinkHeader::Link>] parsed Link header values
+    def links(base: url)
+      Faraday::LinkHeader.parse(headers['Link'], base: base)
     end
 
     def url

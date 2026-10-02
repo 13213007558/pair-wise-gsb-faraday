@@ -196,6 +196,41 @@ module Faraday
   class ParsingError < Error
   end
 
+  # Base class for errors raised by Faraday::Request::FollowRedirects while
+  # following a redirect chain. Carries the hops followed so far in
+  # +redirects+ (an array of { status:, from:, to: } hashes), so callers can
+  # tell exactly at which hop the chain failed.
+  class RedirectError < Error
+    attr_reader :redirects
+
+    def initialize(message, redirects = [])
+      @redirects = redirects
+      super(message)
+    end
+  end
+
+  # Raised by Faraday::Request::FollowRedirects when the configured redirect
+  # limit is reached.
+  class RedirectLimitReached < RedirectError
+  end
+
+  # Raised by Faraday::Request::FollowRedirects when a redirect target has
+  # already been visited in the same chain.
+  class RedirectLoopDetected < RedirectError
+  end
+
+  # Raised by Faraday::Request::FollowRedirects when a redirect would
+  # downgrade a request from HTTPS to HTTP and +allow_https_to_http+ is
+  # not enabled.
+  class InsecureRedirectError < RedirectError
+  end
+
+  # Raised by Faraday::Request::FollowRedirects when a redirect keeps the
+  # original method and body (e.g. 307/308) but the body cannot be replayed
+  # for the follow-up request.
+  class NonReplayableBodyError < RedirectError
+  end
+
   # Raised by Faraday::Middleware and subclasses when invalid default_options are used
   class InitializationError < Error
   end

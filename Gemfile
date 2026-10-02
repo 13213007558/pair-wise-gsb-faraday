@@ -16,6 +16,7 @@ group :development, :test do
   gem 'rspec_junit_formatter', '~> 0.4'
   gem 'simplecov'
   gem 'webmock', '~> 3.4'
+  gem 'webrick'
 end
 
 group :development, :lint do

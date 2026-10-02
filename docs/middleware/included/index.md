@@ -16,6 +16,7 @@ content type.
 * [`UrlEncoded`][url_encoded] converts a `Faraday::Request#body` hash of key/value pairs into a url-encoded request body.
 * [`Json Request`][json-request] converts a `Faraday::Request#body` hash of key/value pairs into a JSON request body.
 * [`Instrumentation`][instrumentation] allows to instrument requests using different tools.
+* [`FollowRedirects`][follow-redirects] follows HTTP redirects (301, 302, 303, 307, 308) before returning the response.
 
 
 ### Response Middleware
@@ -32,6 +33,7 @@ before returning it.
 [url_encoded]:          middleware/included/url-encoding
 [json-request]:         middleware/included/json#json-requests
 [instrumentation]:      middleware/included/instrumentation
+[follow-redirects]:     middleware/included/follow-redirects
 [json-response]:        middleware/included/json#json-responses
 [logger]:               middleware/included/logging
 [raise_error]:          middleware/included/raising-errors

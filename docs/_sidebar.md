@@ -16,6 +16,7 @@
     * [URL Encoding](middleware/included/url-encoding.md)
     * [JSON Encoding/Decoding](middleware/included/json.md)
     * [Instrumentation](middleware/included/instrumentation.md)
+    * [Following Redirects](middleware/included/follow-redirects.md)
     * [Logging](middleware/included/logging.md)
     * [Raising Errors](middleware/included/raising-errors.md)
   * [Writing custom middleware](middleware/custom-middleware.md)

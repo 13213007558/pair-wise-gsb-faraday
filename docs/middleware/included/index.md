@@ -26,6 +26,7 @@ before returning it.
 * [`Json Response`][json-response] parses response body into a hash of key/value pairs.
 * [`Logger`][logger] logs both the request and the response body and headers.
 * [`RaiseError`][raise_error] checks the response HTTP code and raises an exception if it is a 4xx or 5xx code.
+* [`FollowRedirects`][follow_redirects] follows HTTP redirects and returns the final response.
 
 
 [authentication]:       middleware/included/authentication.md
@@ -35,3 +36,4 @@ before returning it.
 [json-response]:        middleware/included/json#json-responses
 [logger]:               middleware/included/logging
 [raise_error]:          middleware/included/raising-errors
+[follow_redirects]:     middleware/included/following-redirects

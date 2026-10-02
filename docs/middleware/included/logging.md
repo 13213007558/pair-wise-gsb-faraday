@@ -69,6 +69,54 @@ conn.get('/', api_key: 'secret')
 # => DEBUG -- response: date: "Sun, 19 May 2019 16:12:36 GMT"
 ```
 
+### Redact sensitive information
+
+For structured redaction, provide a `redact` option with rules for header
+names, URL query keys, form-encoded body keys and JSON paths. Redaction is
+applied only to the logged output: the request and response passed through
+the adapter (objects, bytes and signatures) are never modified, and
+one-shot (IO-like) bodies are never read for logging. When a body cannot
+be parsed for redaction, a restricted notice is logged instead of the raw
+content.
+
+```ruby
+conn = Faraday.new(url: 'http://httpbingo.org') do |faraday|
+  faraday.response :logger, nil, {
+    bodies: true,
+    redact: {
+      headers: %w[Authorization],              # header names (case-insensitive)
+      query: %w[token],                        # URL query keys
+      form: %w[password],                      # form-encoded body keys
+      json: ['$.user.password', '$.phones[*]'] # JSON paths
+    }
+  }
+end
+
+conn.post('/login?token=t1', 'password=hunter2&phones[]=138',
+          'Content-Type' => 'application/x-www-form-urlencoded',
+          'Authorization' => 'Bearer s3cr3t')
+# => INFO  -- request: POST http://httpbingo.org/login?token=[REDACTED]
+# => DEBUG -- request: Authorization: "[REDACTED]"
+# => DEBUG -- request: password=[REDACTED]&phones[]=[REDACTED]
+```
+
+Rules can also be scoped per direction with the `request` and `response`
+keys; rules without a direction apply to both. Repeated parameters and
+nested arrays (e.g. `phones[]=1&phones[]=2`) are all covered, and JSON
+paths support nested keys (`$.a.b`), array indexes (`$.a[0]`) and array
+wildcards (`$.a[*]`). The replacement text defaults to `[REDACTED]` and
+can be changed with the `replacement` rule.
+
+```ruby
+faraday.response :logger, nil, {
+  bodies: true,
+  redact: {
+    request:  { json: ['$.password'] },
+    response: { json: ['$.token'], replacement: '[HIDDEN]' }
+  }
+}
+```
+
 ### Change log level
 
 By default, the `logger` middleware logs on the `info` log level. It is possible to configure

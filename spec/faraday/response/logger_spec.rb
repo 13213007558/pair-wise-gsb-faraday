@@ -296,4 +296,192 @@ RSpec.describe Faraday::Response::Logger do
       expect(string_io.string).not_to match(%(Content-Type: "text/html))
     end
   end
+
+  context 'when redacting sensitive data' do
+    let(:captured_envs) { [] }
+
+    let(:capture_adapter_class) do
+      captured = captured_envs
+      Class.new(Faraday::Adapter) do
+        define_method(:call) do |env|
+          # Snapshot the raw request exactly as it reaches the adapter,
+          # before the response overwrites env.body.
+          captured << {
+            url: env.url.to_s,
+            request_headers: env.request_headers.dup,
+            body: env.body
+          }
+          env.response = Faraday::Response.new
+          save_response(env, 200, '{"token":"response-secret","note":"ok"}',
+                        { 'Content-Type' => 'application/json',
+                          'X-Response-Token' => 'response-secret' })
+        end
+      end
+    end
+
+    let(:logger_options) do
+      {
+        bodies: true,
+        redact: {
+          request: {
+            headers: %w[Authorization],
+            query: %w[token],
+            form: %w[password phones],
+            json: ['$.password', '$.phones[*]']
+          },
+          response: {
+            headers: %w[X-Response-Token],
+            json: ['$.token']
+          }
+        }
+      }
+    end
+
+    let(:conn) do
+      adapter_class = capture_adapter_class
+      options = logger_options
+      log = logger
+      Faraday.new(url: 'http://example.org') do |b|
+        b.response :logger, log, options
+        b.adapter adapter_class
+      end
+    end
+
+    it 'redacts request and response headers by name' do
+      conn.get('/hello', nil, 'Authorization' => 'Bearer s3cr3t')
+      expect(string_io.string).to include('Authorization: "[REDACTED]"')
+      expect(string_io.string).to include('X-Response-Token: "[REDACTED]"')
+      expect(string_io.string).not_to include('s3cr3t')
+      expect(string_io.string).not_to include('response-secret')
+    end
+
+    it 'keeps non-sensitive headers in the log' do
+      conn.get('/hello', nil, 'Accept' => 'text/html')
+      expect(string_io.string).to include('Accept: "text/html"')
+      expect(string_io.string).to include('Content-Type: "application/json"')
+    end
+
+    it 'redacts query keys in the logged url' do
+      conn.get('/callback?token=t1&keep=1')
+      expect(string_io.string).to include('token=[REDACTED]')
+      expect(string_io.string).to include('keep=1')
+      expect(string_io.string).not_to include('t1')
+    end
+
+    it 'redacts form keys, repeated params and nested arrays in the request body' do
+      conn.post('/submit',
+                'password=hunter2&password=hunter3&phones[]=138&phones[]=139&name=Unagi',
+                'Content-Type' => 'application/x-www-form-urlencoded')
+      expect(string_io.string).to include('password=[REDACTED]&password=[REDACTED]')
+      expect(string_io.string).to include('phones[]=[REDACTED]&phones[]=[REDACTED]')
+      expect(string_io.string).to include('name=Unagi')
+      expect(string_io.string).not_to include('hunter2')
+      expect(string_io.string).not_to include('hunter3')
+      expect(string_io.string).not_to include('138')
+    end
+
+    it 'applies request rules only to the request and response rules only to the response' do
+      conn.post('/json',
+                '{"password":"req-secret","phones":["138","139"],"token":"req-token"}',
+                'Content-Type' => 'application/json')
+      # request rules redact password and phones, but not token
+      expect(string_io.string).to include('"password":"[REDACTED]"')
+      expect(string_io.string).to include('"phones":["[REDACTED]","[REDACTED]"]')
+      expect(string_io.string).to include('req-token')
+      # response rules redact token, and keep the rest for debugging
+      expect(string_io.string).to include('"token":"[REDACTED]"')
+      expect(string_io.string).to include('"note":"ok"')
+      expect(string_io.string).not_to include('req-secret')
+      expect(string_io.string).not_to include('response-secret')
+    end
+
+    it 'logs a restricted notice instead of an unparsable body' do
+      conn.post('/json', 'not json { req-secret', 'Content-Type' => 'application/json')
+      expect(string_io.string).to include('[body omitted: could not parse JSON body for redaction]')
+      expect(string_io.string).not_to include('req-secret')
+    end
+
+    it 'sends the exact original request to the adapter' do
+      body = +'password=hunter2&phones[]=138&name=Unagi'
+      original_bytes = body.bytes.dup
+      conn.post('/submit?keep=1&token=t1', body,
+                'Content-Type' => 'application/x-www-form-urlencoded',
+                'Authorization' => 'Bearer s3cr3t',
+                'X-Signature' => 'sig:abc123')
+
+      captured = captured_envs.last
+      expect(captured[:url]).to eq('http://example.org/submit?keep=1&token=t1')
+      expect(captured[:request_headers]['Authorization']).to eq('Bearer s3cr3t')
+      expect(captured[:request_headers]['X-Signature']).to eq('sig:abc123')
+      expect(captured[:body]).to equal(body)
+      expect(captured[:body].bytes).to eq(original_bytes)
+      expect(captured[:body]).to eq('password=hunter2&phones[]=138&name=Unagi')
+    end
+
+    it 'produces identical adapter input with and without logging' do
+      body = +'password=hunter2&name=Unagi'
+      build = lambda do |with_logger|
+        adapter_class = capture_adapter_class
+        Faraday.new(url: 'http://example.org') do |b|
+          b.response :logger, logger, logger_options if with_logger
+          b.adapter adapter_class
+        end
+      end
+
+      build.call(false).post('/submit?token=t1', body,
+                             'Content-Type' => 'application/x-www-form-urlencoded',
+                             'Authorization' => 'Bearer s3cr3t')
+      without_logging = captured_envs.pop
+      build.call(true).post('/submit?token=t1', body,
+                            'Content-Type' => 'application/x-www-form-urlencoded',
+                            'Authorization' => 'Bearer s3cr3t')
+      with_logging = captured_envs.pop
+
+      expect(with_logging[:url]).to eq(without_logging[:url])
+      expect(with_logging[:request_headers].to_hash).to eq(without_logging[:request_headers].to_hash)
+      expect(with_logging[:body]).to equal(without_logging[:body])
+      expect(with_logging[:body].bytes).to eq(without_logging[:body].bytes)
+    end
+
+    context 'with a one-shot (IO-like) request body' do
+      let(:counting_io_class) do
+        Class.new do
+          attr_reader :read_count
+
+          def initialize(data)
+            @data = data
+            @read_count = 0
+          end
+
+          def read(*_args)
+            @read_count += 1
+            @data
+          end
+        end
+      end
+
+      it 'is never read for logging and reaches the adapter untouched' do
+        io = counting_io_class.new('stream-bytes')
+        conn.post('/upload', io, 'Content-Type' => 'application/octet-stream')
+
+        expect(io.read_count).to eq(0)
+        expect(captured_envs.last[:body]).to equal(io)
+        expect(string_io.string).to include('[stream body omitted: not read for logging]')
+        expect(string_io.string).not_to include('stream-bytes')
+      end
+    end
+
+    context 'with rules that do not distinguish request and response' do
+      let(:logger_options) do
+        { bodies: true, redact: { headers: %w[Authorization X-Response-Token] } }
+      end
+
+      it 'applies the shared rules to both directions' do
+        conn.get('/hello', nil, 'Authorization' => 'Bearer s3cr3t')
+        expect(string_io.string).to include('Authorization: "[REDACTED]"')
+        expect(string_io.string).to include('X-Response-Token: "[REDACTED]"')
+        expect(string_io.string).not_to include('s3cr3t')
+      end
+    end
+  end
 end

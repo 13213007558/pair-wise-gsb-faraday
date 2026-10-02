@@ -23,6 +23,13 @@ These guidelines ensure all AI agents (Copilot, Claude, Cursor, etc.) contribute
 - Implement required methods (`build_connection`, `close`, etc.) as seen in existing adapters.
 - Keep each adapter in its own file under `lib/faraday/adapter/`.
 
+## Logging
+- Log formatting lives in `Faraday::Logging::Formatter`; structured redaction of
+  sensitive data lives in `Faraday::Logging::Redactor` (`lib/faraday/logging/`).
+- Redaction must only ever touch log copies: never mutate `env` objects, and
+  never read one-shot (IO-like) bodies for logging. Unparsable bodies must be
+  replaced with a restricted notice instead of being logged raw.
+
 ## Testing
 - All code must be tested with RSpec. Use shared examples for adapters/middleware where applicable (see `spec/support`).
 - When testing middleware, use doubles for `app` and verify correct invocation of hooks.

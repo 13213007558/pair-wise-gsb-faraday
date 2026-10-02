@@ -69,6 +69,32 @@ conn.get('/', api_key: 'secret')
 # => DEBUG -- response: date: "Sun, 19 May 2019 16:12:36 GMT"
 ```
 
+### Redact sensitive data by structure
+
+Regex filters are powerful but brittle. The default formatter also supports
+structured redaction rules that understand headers, query strings,
+urlencoded forms and JSON bodies:
+
+```ruby
+conn = Faraday.new(url: 'http://httpbingo.org') do |faraday|
+  faraday.response :logger, nil, { bodies: true } do |logger|
+    logger.redact(:header, 'Authorization')                 # any request/response header
+    logger.redact(:query, 'token')                          # URL query key (repeats covered)
+    logger.redact(:form, 'password')                        # urlencoded body key
+    logger.redact(:json, '$.users[*].phones[*]')            # JSON path, incl. nested arrays
+    logger.redact(:json, '$..secret')                       # recursive key lookup
+    logger.redact(:json, '$.token', on: :response)          # response-only rule
+  end
+end
+```
+
+Rules apply to both requests and responses unless you pass `on: :request` or
+`on: :response`. Redaction only affects the log output: the request and
+response objects, bodies and signatures passed to the adapter are never
+modified. One-shot (non-rewindable) bodies are never read for logging, and
+bodies that cannot be parsed are replaced with a restricted notice instead
+of being logged raw.
+
 ### Change log level
 
 By default, the `logger` middleware logs on the `info` log level. It is possible to configure

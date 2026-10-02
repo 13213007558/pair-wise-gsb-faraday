@@ -296,4 +296,249 @@ RSpec.describe Faraday::Response::Logger do
       expect(string_io.string).not_to match(%(Content-Type: "text/html))
     end
   end
+
+  context 'with structured redaction' do
+    let(:logger_options) { { bodies: true } }
+    let(:captured_envs) { [] }
+    let(:conn) do
+      captured = captured_envs
+
+      Faraday.new do |b|
+        b.response :logger, logger, logger_options do |f|
+          f.redact(:header, 'Authorization')
+          f.redact(:header, 'x-api-token', on: :response)
+          f.redact(:query, 'token')
+          f.redact(:form, 'password')
+          f.redact(:json, '$.users[*].phones[*]')
+          f.redact(:json, '$.users[*].phone')
+          f.redact(:json, '$.credentials.password')
+          f.redact(:json, '$.token')
+          f.redact(:json, '$..secret')
+        end
+        b.adapter :test do |stubs|
+          stubs.get('/headers') do
+            [200, { 'Content-Type' => 'text/plain', 'X-Api-Token' => 'resp-token-9' }, 'ok']
+          end
+          stubs.post('/echo') do |env|
+            captured << env
+            [200, { 'Content-Type' => 'application/json' },
+                 '{"users":[{"phones":["13800000000","13900000000"],"name":"ada"}],' \
+                 '"token":"resp-token-1","meta":{"secret":"s1"},"items":[{"secret":"s2"}]}']
+          end
+          stubs.get('/broken_json') do
+            [200, { 'Content-Type' => 'application/json' }, '{not: valid json']
+          end
+          stubs.get('/hash_body') do
+            [200, { 'Content-Type' => 'application/json' }, { 'users' => [{ 'phone' => '13800000000' }] }]
+          end
+        end
+      end
+    end
+
+    # FlatParamsEncoder keeps repeated query params so the logger (and the
+    # redaction rules) actually see every occurrence.
+    let(:flat_conn) do
+      captured = captured_envs
+
+      Faraday.new(request: { params_encoder: Faraday::FlatParamsEncoder }) do |b|
+        b.response :logger, logger, logger_options do |f|
+          f.redact(:header, 'Authorization')
+          f.redact(:query, 'token')
+          f.redact(:form, 'password')
+        end
+        b.adapter :test do |stubs|
+          stubs.get('/headers') { [200, {}, 'ok'] }
+          stubs.post('/echo') do |env|
+            captured << env
+            [200, {}, 'ok']
+          end
+        end
+      end
+    end
+
+    let(:read_counting_io_class) do
+      Class.new do
+        attr_reader :read_count
+
+        def initialize(payload)
+          @payload = payload
+          @read_count = 0
+        end
+
+        def read(*_args)
+          @read_count += 1
+          @payload
+        end
+      end
+    end
+
+    it 'rejects invalid redaction configuration' do
+      Faraday.new do |b|
+        b.response :logger, logger do |f|
+          expect { f.redact(:cookie, 'x') }.to raise_error(ArgumentError)
+          expect { f.redact(:header, 'x', on: :sideways) }.to raise_error(ArgumentError)
+          expect { f.redact(:json, 'users.phone') }.to raise_error(ArgumentError)
+        end
+        b.adapter :test
+      end
+    end
+
+    it 'redacts configured header names case-insensitively' do
+      conn.get('/headers', nil, 'Authorization' => 'Bearer req-token-9')
+      expect(string_io.string).to include('Authorization: "[REDACTED]"')
+      expect(string_io.string).to include('X-Api-Token: "[REDACTED]"')
+      expect(string_io.string).not_to include('req-token-9')
+      expect(string_io.string).not_to include('resp-token-9')
+    end
+
+   it 'redacts repeated query params in the logged URL only' do
+      flat_conn.get('/headers?token=a1b2&token=c3d4&lang=zh')
+      expect(string_io.string).to include('token=[REDACTED]&token=[REDACTED]')
+      expect(string_io.string).to include('lang=zh')
+      expect(string_io.string).not_to include('a1b2')
+      expect(string_io.string).not_to include('c3d4')
+    end
+
+    it 'redacts repeated form keys in the request body' do
+      conn.post('/echo', 'user=foo&password=pw1&password=pw2',
+                'Content-Type' => 'application/x-www-form-urlencoded')
+      expect(string_io.string).to include('user=foo&password=[REDACTED]&password=[REDACTED]')
+      expect(string_io.string).not_to include('pw1')
+      expect(string_io.string).not_to include('pw2')
+    end
+
+    it 'redacts JSON request bodies by path' do
+      conn.post('/echo', '{"credentials":{"password":"pw9","user":"u1"}}',
+                'Content-Type' => 'application/json')
+      expect(string_io.string).not_to include('pw9')
+      expect(string_io.string).to include('"user":"u1"')
+    end
+
+    it 'redacts phone numbers nested in JSON arrays in the response' do
+      conn.post('/echo', 'user=foo')
+      expect(string_io.string).not_to include('13800000000')
+      expect(string_io.string).not_to include('13900000000')
+      expect(string_io.string).not_to include('resp-token-1')
+      expect(string_io.string).not_to include('s1')
+      expect(string_io.string).not_to include('s2')
+      expect(string_io.string).to include('[REDACTED]')
+      expect(string_io.string).to include('"name":"ada"')
+    end
+
+    it 'redacts structured response bodies without mutating them' do
+      resp = conn.get('/hash_body')
+      expect(string_io.string).not_to include('13800000000')
+      expect(resp.body['users'][0]['phone']).to eq('13800000000')
+    end
+
+    it 'logs a restricted notice instead of unparseable JSON' do
+      conn.get('/broken_json')
+      expect(string_io.string).to include(Faraday::Logging::Formatter::UNPARSEABLE_BODY_NOTICE)
+      expect(string_io.string).not_to include('not: valid json')
+    end
+
+    it 'logs a restricted notice instead of unparseable form data' do
+      conn.post('/echo', 'password=%ZZ', 'Content-Type' => 'application/x-www-form-urlencoded')
+      expect(string_io.string).to include(Faraday::Logging::Formatter::UNPARSEABLE_BODY_NOTICE)
+      expect(string_io.string).not_to include('%ZZ')
+    end
+
+    it 'never reads one-shot bodies and logs a notice instead' do
+      io = read_counting_io_class.new('password=stream-secret')
+      conn.post('/echo', io, 'Content-Type' => 'application/x-www-form-urlencoded')
+      expect(io.read_count).to eq(0)
+      expect(captured_envs.last.request_body).to equal(io)
+      expect(string_io.string).to include(Faraday::Logging::Formatter::ONE_SHOT_BODY_NOTICE)
+      expect(string_io.string).not_to include('stream-secret')
+    end
+
+    it 'does not change the request passed to the adapter' do
+      raw_body = 'name=Unagi&password=hunter2&password=hunter3'
+      resp = flat_conn.post('/echo?token=abc123&token=def456&lang=zh', raw_body,
+                       'Content-Type' => 'application/x-www-form-urlencoded',
+                       'Authorization' => 'Bearer sig%3Dabc')
+
+      env = captured_envs.last
+      expect(env.request_body).to equal(raw_body)
+      expect(env.request_body).to eq('name=Unagi&password=hunter2&password=hunter3')
+      expect(env.request_headers['Authorization']).to eq('Bearer sig%3Dabc')
+      expect(env.url.to_s).to eq('http:/echo?lang=zh&token=abc123&token=def456')
+
+      expect(string_io.string).not_to include('hunter2')
+      expect(string_io.string).not_to include('abc123')
+      expect(string_io.string).not_to include('sig%3Dabc')
+    end
+
+    it 'sends exactly the same request as a connection without logging' do
+      captured = []
+      build = lambda do |logging|
+        Faraday.new do |b|
+          if logging
+            b.response :logger, logger, bodies: true do |f|
+              f.redact(:header, 'Authorization')
+              f.redact(:query, 'token')
+              f.redact(:form, 'password')
+            end
+          end
+          b.adapter :test do |stubs|
+            stubs.post('/echo') do |env|
+              captured << env
+              [200, {}, 'ok']
+            end
+          end
+        end
+      end
+
+      headers = { 'Content-Type' => 'application/x-www-form-urlencoded', 'Authorization' => 'Bearer tok' }
+      build.call(false).post('/echo?token=a&x=1', 'name=Unagi&password=hunter2', headers)
+      build.call(true).post('/echo?token=a&x=1', 'name=Unagi&password=hunter2', headers)
+
+      expect(captured[1].request_body).to eq(captured[0].request_body)
+      expect(captured[1].request_body.bytes).to eq(captured[0].request_body.bytes)
+      expect(captured[1].request_headers).to eq(captured[0].request_headers)
+      expect(captured[1].url).to eq(captured[0].url)
+    end
+
+    context 'with request-only rules' do
+      let(:conn) do
+        Faraday.new do |b|
+          b.response :logger, logger, bodies: true do |f|
+            f.redact(:form, 'password', on: :request)
+          end
+          b.adapter :test do |stubs|
+            stubs.post('/phase') do
+              [200, { 'Content-Type' => 'application/x-www-form-urlencoded' }, 'password=resp-secret&ok=1']
+            end
+          end
+        end
+      end
+
+      it 'redacts only the request' do
+        conn.post('/phase', 'password=req-secret&ok=1', 'Content-Type' => 'application/x-www-form-urlencoded')
+        expect(string_io.string).not_to include('req-secret')
+        expect(string_io.string).to include('resp-secret')
+      end
+    end
+
+    context 'with response-only rules' do
+      let(:conn) do
+        Faraday.new do |b|
+          b.response :logger, logger, bodies: true do |f|
+            f.redact(:form, 'password', on: :response)
+          end
+          b.adapter :test do |stubs|
+            stubs.post('/phase') do
+              [200, { 'Content-Type' => 'application/x-www-form-urlencoded' }, 'password=resp-secret&ok=1']
+            end
+          end
+        end
+      end
+
+      it 'redacts only the response' do
+        conn.post('/phase', 'password=req-secret&ok=1', 'Content-Type' => 'application/x-www-form-urlencoded')
+        expect(string_io.string).to include('req-secret')
+        expect(string_io.string).not_to include('resp-secret')
+      end
+    end
+  end
 end

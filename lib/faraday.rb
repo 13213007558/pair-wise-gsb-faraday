@@ -19,6 +19,7 @@ require 'faraday/adapter'
 require 'faraday/request'
 require 'faraday/response'
 require 'faraday/net_http'
+require 'faraday/odata'
 # This is the main namespace for Faraday.
 #
 # It provides methods to create {Connection} objects, and HTTP-related

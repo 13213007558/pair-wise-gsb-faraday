@@ -30,4 +30,5 @@
     * [Test your adapter](adapters/custom/testing.md)
 * Advanced Features
   * [Parallel Requests](advanced/parallel-requests.md)
+  * [OData Batch](advanced/odata-batch.md)
   * [Streaming Responses](advanced/streaming-responses.md)

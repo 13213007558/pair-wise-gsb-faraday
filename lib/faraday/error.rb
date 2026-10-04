@@ -196,6 +196,22 @@ module Faraday
   class ParsingError < Error
   end
 
+  # Raised when a range response is malformed or inconsistent with the request.
+  class RangeError < Error
+  end
+
+  # Raised when a requested byte range cannot be satisfied.
+  class UnsatisfiableRangeError < RangeError
+  end
+
+  # Raised when a response validator differs from the expected strong ETag.
+  class ValidatorMismatchError < RangeError
+  end
+
+  # Raised when bytes advertised by a response do not match verified content.
+  class RangeContentMismatchError < RangeError
+  end
+
   # Raised by Faraday::Middleware and subclasses when invalid default_options are used
   class InitializationError < Error
   end

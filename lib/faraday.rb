@@ -18,6 +18,7 @@ require 'faraday/middleware'
 require 'faraday/adapter'
 require 'faraday/request'
 require 'faraday/response'
+require 'faraday/download_session'
 require 'faraday/net_http'
 # This is the main namespace for Faraday.
 #

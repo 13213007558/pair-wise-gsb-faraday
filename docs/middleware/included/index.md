@@ -12,7 +12,7 @@ parsing the response body, logging useful info or checking the response status.
 middleware set Header values or transform the request body based on the
 content type.
 
-* [`Authorization`][authentication] allows you to automatically add an Authorization header to your requests.
+* [`DigestAuth`][authentication] answers RFC 7616 Digest authentication challenges for you.
 * [`UrlEncoded`][url_encoded] converts a `Faraday::Request#body` hash of key/value pairs into a url-encoded request body.
 * [`Json Request`][json-request] converts a `Faraday::Request#body` hash of key/value pairs into a JSON request body.
 * [`Instrumentation`][instrumentation] allows to instrument requests using different tools.
